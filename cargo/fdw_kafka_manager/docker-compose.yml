@@ -1,7 +1,7 @@
 version: '3.7'
 
 services:
-  api:
+  kafka_manager:
     build:
       context: ./
       dockerfile: ./cargo/fdw_kafka_manager/Dockerfile
@@ -13,5 +13,5 @@ services:
     volumes:
       - /home/cargo/configs:/cargo/configs
 networks:
-  cfs3_network:
+  cargo_network:
     driver: bridge
