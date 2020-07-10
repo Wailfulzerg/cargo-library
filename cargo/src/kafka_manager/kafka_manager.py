@@ -70,8 +70,10 @@ class KafkaAvroProcessor(object):
             key, value = self._unpack(msg.key()), self._unpack(msg.value())
             logger.info(f"Message: {key}, {value}")
             if db_manager:
+                if not value['BEFORE']: value['BEFORE'] = {}
+                if not value['AFTER']: value['AFTER'] = {}
                 sql = f"""INSERT INTO public.fdw_kafka(key, BEFORE, AFTER, FLIGHT_URL, LEG_URL, AFTER_RAW_DATA)
-                            values ({key}, {value['BEFORE']}, {value['AFTER']}, value['FLIGHT_URL'], value['LEG_URL'], value['AFTER_RAW_DATA']);"""
+                            values ('{key}', '{value['BEFORE']}', '{value['AFTER']}', '{value['FLIGHT_URL']}', '{value['LEG_URL']}', '');"""
             db_manager.execute(sql)
 
     def _unpack(self, payload):
