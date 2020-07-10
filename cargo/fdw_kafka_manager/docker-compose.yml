@@ -1,0 +1,17 @@
+version: '3.7'
+
+services:
+  kafka_manager:
+    build:
+      context: ./
+      dockerfile: ./cargo/fdw_kafka_manager/Dockerfile
+    command: python /cargo/fdw_kafka_manager/fdw_kafka_manager.py
+    environment:
+      CARGO_CONFIG_PATH: '/cargo/configs/config.ini'
+    networks:
+      - cargo_network
+    volumes:
+      - /home/cargo/configs:/cargo/configs
+networks:
+  cargo_network:
+    driver: bridge

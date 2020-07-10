@@ -1,76 +1,16 @@
-import json
-from loguru import logger
-from confluent_kafka import Producer, Consumer, KafkaError, KafkaException
-
 import io
 import struct
+
 from avro.io import BinaryDecoder, DatumReader
+from confluent_kafka import Consumer, KafkaError
 from confluent_kafka.avro.cached_schema_registry_client import CachedSchemaRegistryClient
 from confluent_kafka.avro.serializer import SerializerError
-
-
-class KafkaProcessor(object):
-    def __init__(self, kafka_conf):
-        self.topic = kafka_conf['group.id']
-        self.consumer_conf = {
-            'auto.offset.reset': 'earliest',
-            'enable.partition.eof': True,
-        }
-        self.consumer_conf.update(kafka_conf)
-        self.producer_conf = kafka_conf
-        self.producer = None
-        self.consumer = None
-
-    def init_producer(self):
-        self.producer = Producer(self.producer_conf)
-
-    def init_consumer(self):
-        self.consumer = Consumer(self.consumer_conf)
-        self.consumer.subscribe(self.topic.split(','))
-
-    @staticmethod
-    def delivery_report(err, msg):
-        """ Called once for each message produced to indicate delivery result.
-            Triggered by poll() or flush(). """
-        if err is not None:
-            logger.error('Message delivery failed: {}'.format(err))
-        else:
-            logger.info('Message delivered to {} [{}]'.format(msg.topic(), msg.partition()))
-
-    def produce(self, messages):
-        if not self.producer:
-            self.init_producer()
-        for message in messages:
-            self.producer.produce(self.topic, json.dumps(message).encode('utf-8'),
-                                  callback=self.delivery_report)
-            self.producer.poll(0.5)
-
-    def consume(self):
-        if not self.consumer:
-            self.init_consumer()
-        try:
-            while True:
-                msg = self.consumer.poll(timeout=1.0)
-                if msg is None:
-                    continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        # End of partition event
-                        logger.info('%% %s [%d] reached end at offset %d\n' %
-                                     (msg.topic(), msg.partition(), msg.offset()))
-                        break
-                    elif msg.error():
-                        raise KafkaException(msg.error())
-                else:
-                    logger.info(msg.value().decode('utf-8'))
-        finally:
-            # Close down consumer to commit final offsets.
-            self.consumer.close()
+from loguru import logger
 
 
 class KafkaAvroProcessor(object):
     def __init__(self, kafka_conf):
-        self.topic = kafka_conf['group.id']
+        self.topics = None
         self.register_client = None
         self.consumer_conf = {
             'auto.offset.reset': 'earliest',
@@ -86,9 +26,13 @@ class KafkaAvroProcessor(object):
         pass
 
     def init_consumer(self, schema_registry_url, topics):
+        logger.info("Initializing avro consumer")
         self.consumer = Consumer(self.consumer_conf)
+        logger.info(f"Schema registry url: {schema_registry_url}")
         self.register_client = CachedSchemaRegistryClient(url=schema_registry_url)
-        self.consumer.subscribe(topics)
+        logger.info(f"Subscribing to topics: {topics}")
+        self.topics = topics
+        self.consumer.subscribe(self.topics)
 
     @staticmethod
     def delivery_report(err, msg):
@@ -97,29 +41,40 @@ class KafkaAvroProcessor(object):
         if err is not None:
             logger.error('Message delivery failed: {}'.format(err))
         else:
-            logger.\
+            logger. \
                 info('Message delivered to {} [{}]'.format(msg.topic(), msg.partition()))
 
     def produce(self, messages):
         pass
 
-    def consume(self):
+    def consume(self, db_manager=None):
+        logger.info("Consuming")
         while True:
             try:
-                msg = self.consumer.poll(1)
+                msg = self.consumer.poll(timeout=1)
             except SerializerError as e:
-                print("Message deserialization failed for {}: {}".format(msg, e))
+                logger.error("Message deserialization failed for {}: {}".format(msg, e))
                 raise SerializerError
 
             if msg is None:
                 continue
 
             if msg.error():
-                print("AvroConsumer error: {}".format(msg.error()))
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    logger.info('%% %s [%d] reached end at offset %d' %
+                                (msg.topic(), msg.partition(), msg.offset()))
+                    continue
+                logger.error("AvroConsumer error: {}".format(msg.error()))
                 return
 
             key, value = self._unpack(msg.key()), self._unpack(msg.value())
-            print(key, value)
+            logger.info(f"Message: {key}, {value}")
+            if db_manager:
+                if not value['BEFORE']: value['BEFORE'] = {}
+                if not value['AFTER']: value['AFTER'] = {}
+                sql = f"""INSERT INTO public.fdw_kafka(key, BEFORE, AFTER, FLIGHT_URL, LEG_URL, AFTER_RAW_DATA)
+                            values ('{key}', '{value['BEFORE']}', '{value['AFTER']}', '{value['FLIGHT_URL']}', '{value['LEG_URL']}', '');"""
+            db_manager.execute(sql)
 
     def _unpack(self, payload):
         magic, schema_id = struct.unpack('>bi', payload[:5])

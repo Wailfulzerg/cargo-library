@@ -1,3 +1,6 @@
 boto3
 confluent-kafka
+confluent-kafka[avro]
+psycopg2-binary
 loguru
+sqlalchemy
